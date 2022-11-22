@@ -110,7 +110,6 @@ class RecModule(nn.Module):
         item_context_dim: int,
         user_context_features_in: int,
         user_context_dim: int,
-
         ) -> None:
         super().__init__()
 
@@ -157,9 +156,37 @@ class RecModule(nn.Module):
         return out
 
 
+class UIDataset(Dataset):
+    def __init__(self, data: pd.DataFrame) -> None:
+        super().__init__()
+
+        self.features = data[['user_idx', 'item_idx']].values
+        self.labels = data['rating'].values
+    
+    
+    def __len__(self):
+        return self.labels.shape[0]
+
+
+    def __getitem__(self, idx):
+        return self.features[idx, :], self.labels[idx]
+
+
 class SimpleNNRec():
     def __init__(self) -> None:
-        pass
+        
+        self. rec_model = RecModule(
+            num_user: int,
+            num_item: int,
+            cf_dim: int,
+            nn_dim_user: int,
+            nn_dim_item: int,
+            nn_dim_nn: int,
+            item_context_features_in: int,
+            item_context_dim: int,
+            user_context_features_in: int,
+            user_context_dim: int,
+            )
     
 
     
