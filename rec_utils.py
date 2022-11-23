@@ -1,4 +1,5 @@
 import pandas as pd
+from sklearn.model_selection import train_test_split
 
 import torch
 from torch import nn
@@ -156,12 +157,20 @@ class RecModule(nn.Module):
         return out
 
 
-class UIDataset(Dataset):
-    def __init__(self, data: pd.DataFrame) -> None:
+class SimpleNNRecDataset(Dataset):
+    def __init__(
+        self,
+        ui_data: pd.DataFrame,
+        item_context: pd.DataFrame,
+        user_context: pd.DataFrame,
+        ) -> None:
         super().__init__()
 
-        self.features = data[['user_idx', 'item_idx']].values
-        self.labels = data['rating'].values
+        self.ui = ui_data[['user_idx', 'item_idx']].values
+        self.u_context = ui_data[['user_idx']].merge(user_context, how='left', on=['user_idx']).drop(['user_idx'], axis=1).values
+        self.i_context = ui_data[['item_idx']].merge(item_context, how='left', on=['item_idx']).drop(['item_idx'], axis=1).values
+        
+        self.labels = ui_data['rating'].values
     
     
     def __len__(self):
@@ -169,30 +178,107 @@ class UIDataset(Dataset):
 
 
     def __getitem__(self, idx):
-        return self.features[idx, :], self.labels[idx]
+        return self.ui[idx, :], self.i_context[idx, :], self.u_context[idx, :], self.labels[idx]
 
 
 class SimpleNNRec():
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        user_field: str,
+        item_field: str,
+        rating_field: str,
+        ) -> None:
+
+        self.logdir = 'runs'
+
+        self.user_field = user_field
+        self.item_field = item_field
+        self.rating_field = rating_field
+
+        self.user_map = None
+        self.item_map = None
         
-        self. rec_model = RecModule(
-            num_user: int,
-            num_item: int,
-            cf_dim: int,
-            nn_dim_user: int,
-            nn_dim_item: int,
-            nn_dim_nn: int,
-            item_context_features_in: int,
-            item_context_dim: int,
-            user_context_features_in: int,
-            user_context_dim: int,
-            )
+        self.model = None
+
+        self.dim = None
+        # self.optimizer = None
+        # self.loss = None
+
+        # self.recommendations = None
     
 
-    
-    
+    def __idx_map(
+        self,
+        data: pd.DataFrame,
+        id: str,
+        idx: str,
+    ):
+        idx_map = data[[id]].drop_duplicates()
+        idx_map = idx_map.reset_index().drop(['index'], axis=1)
+        idx_map = idx_map.reset_index().rename(columns={'index':idx})
+
+        return idx_map
 
     
+    def __ui_map(
+        self,
+        data: pd.DataFrame,
+        user_field: str,
+        item_field: str,
+        rating_field: str,
+    ):
+        ans = data[[user_field, item_field, rating_field]]
+        ans = ans.rename(columns={user_field: 'user_id', item_field: 'item_id', rating_field: 'rating'})
+
+        user_map = self.__idx_map(ans, 'user_id', 'user_idx')
+        item_map = self.__idx_map(ans, 'item_id', 'item_idx')
+
+        return user_map, item_map
     
 
+    def __map_idx_column(
+        self,
+        data: pd.DataFrame,
+    ):
+        ans = data.copy()
+
+        if self.user_field in data.columns:
+            ans = ans.rename(columns={self.user_field: 'user_idx'})
+            mapping = dict(self.user_map[['user_id', 'user_idx']].values)
+            ans['user_idx'] = ans['user_idx'].map(mapping)
+        
+        if self.item_field in data.columns:
+            ans = ans.rename(columns={self.item_field: 'item_idx'})
+            mapping = dict(self.item_map[['item_id', 'item_idx']].values)
+            ans['item_idx'] = ans['item_idx'].map(mapping)
+        
+        return ans
     
+
+    def fit(
+        self,
+        ui_data: pd.DataFrame,
+        item_context: pd.DataFrame,
+        user_context: pd.DataFrame,
+        test_size=0.2,
+        batch_size=62,
+    ):
+
+        self.user_map, self.item_map = self.__ui_map(
+            data=ui_data,
+            user_field=self.user_field,
+            item_field=self.item_field,
+            rating_field=self.rating_field,
+        )
+
+        ui = self.__map_idx_column(ui_data)
+        u_context = self.__map_idx_column(user_context)
+        i_context = self.__map_idx_column(item_context)
+
+        ui_train, ui_test = train_test_split(ui, test_size=test_size, random_state=42)
+
+        dataset_train = SimpleNNRecDataset(ui_data=ui_train, item_context=i_context, user_context=u_context)
+        dataset_test = SimpleNNRecDataset(ui_data=ui_test, item_context=i_context, user_context=u_context)
+
+        dataloader_train = DataLoader(dataset=dataset_train, batch_size=batch_size, shuffle=True)
+        dataloader_test = DataLoader(dataset=dataset_test, batch_size=batch_size, shuffle=True)
