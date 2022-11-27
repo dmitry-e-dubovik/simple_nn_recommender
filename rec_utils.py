@@ -1,9 +1,12 @@
+import os
+import shutil
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 
 class CFModule(nn.Module):
@@ -27,9 +30,9 @@ class CFModule(nn.Module):
     
 
     def forward(self, x):
-        user_x = x[:, 0]
-        item_x = x[:, 1]
-
+        user_x = x[:, 0].int()
+        item_x = x[:, 1].int()
+        
         user_x = self.user_emb(user_x)
         item_x = self.item_emb(item_x)
 
@@ -66,8 +69,8 @@ class NNModule(nn.Module):
 
     
     def forward(self, x):
-        user_x = x[:, 0]
-        item_x = x[:, 1]
+        user_x = x[:, 0].int()
+        item_x = x[:, 1].int()
 
         user_x = self.user_emb(user_x)
         item_x = self.item_emb(item_x)
@@ -94,8 +97,8 @@ class ContextModule(nn.Module):
     
 
     def forward(self, x):
-        if_x = self.fc(x)
-        return if_x
+        ui_x = self.fc(x.float())
+        return ui_x
 
 
 class RecModule(nn.Module):
@@ -113,7 +116,7 @@ class RecModule(nn.Module):
         user_context_dim: int,
         ) -> None:
         super().__init__()
-
+        
         self.cf_module = CFModule(
             num_user=num_user,
             num_item=num_item,
@@ -144,17 +147,17 @@ class RecModule(nn.Module):
         )
     
 
-    def forward(self, x, item_context_features_in, user_context_features_in):
+    def forward(self, x, item_context_features_len):
         x_cf = self.cf_module(x[:,:2])
         x_nn = self.nn_module(x[:,:2])
-        x_ic = self.item_context_module(x[:,2:item_context_features_in+2])
-        x_uc = self.user_context_module(x[:,2+item_context_features_in:])
-
-        concat_x = torch.concat((x_cf, x_nn, x_ic, x_uc), 1)
+        x_ic = self.item_context_module(x[:,2:item_context_features_len+2])
+        x_uc = self.user_context_module(x[:,2+item_context_features_len:])
+        
+        concat_x = torch.concat((x_cf.unsqueeze(1), x_nn, x_ic, x_uc), 1)
 
         out = self.fc(concat_x)
 
-        return out
+        return out.reshape(-1,)
 
 
 class SimpleNNRecDataset(Dataset):
@@ -260,8 +263,14 @@ class SimpleNNRec():
         ui_data: pd.DataFrame,
         item_context: pd.DataFrame,
         user_context: pd.DataFrame,
+        epochs: int = 5,
+        learning_rate: float = 0.001,
+        cf_dim: int = 10,
+        nn_dim_user: int = 10,
+        nn_dim_item: int = 10,
+        nn_dim_nn: int = 10,
         test_size=0.2,
-        batch_size=62,
+        batch_size=64,
     ):
 
         self.user_map, self.item_map = self.__ui_map(
@@ -282,3 +291,76 @@ class SimpleNNRec():
 
         dataloader_train = DataLoader(dataset=dataset_train, batch_size=batch_size, shuffle=True)
         dataloader_test = DataLoader(dataset=dataset_test, batch_size=batch_size, shuffle=True)
+
+        item_context_features_in = item_context.shape[1] - 1
+        user_context_features_in = user_context.shape[1] - 1
+
+        self.model = RecModule(
+            num_user=len(self.user_map),
+            num_item=len(self.item_map),
+            cf_dim=cf_dim,
+            nn_dim_user=nn_dim_user,
+            nn_dim_item=nn_dim_item,
+            nn_dim_nn=nn_dim_nn,
+            item_context_features_in=item_context_features_in,
+            item_context_dim=item_context_features_in,
+            user_context_features_in=user_context_features_in,
+            user_context_dim=user_context_features_in,
+            )
+        
+        self.__train(
+            epochs=epochs,
+            train_dataloader=dataloader_train,
+            test_dataloader=dataloader_test,
+            item_context_features_len=item_context_features_in,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+        )
+            
+
+    def __train(
+        self,
+        epochs,
+        train_dataloader: DataLoader,
+        test_dataloader: DataLoader,
+        item_context_features_len: int,
+        learning_rate: float,
+        batch_size: int,
+    ) -> None:
+
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+        loss = nn.L1Loss()
+
+        if os.path.exists(self.logdir):
+            shutil.rmtree(self.logdir)
+        
+        writer = SummaryWriter(self.logdir)
+
+        for epoch in range(epochs):
+            
+            loss_train_running = 0
+            for batch in train_dataloader:
+                X, y = torch.concat((batch[0], batch[1], batch[2]), dim=1), batch[3]
+
+                pred = self.model(X, item_context_features_len=item_context_features_len)
+                loss_iter = loss(pred, y)
+
+                optimizer.zero_grad()
+                loss_iter.backward()
+                optimizer.step()
+
+                loss_train_running += loss_iter.item()
+
+            loss_test_running = 0
+            for batch in test_dataloader:
+                X, y =torch.concat((batch[0], batch[1], batch[2]), dim=1), batch[3]
+
+                with torch.no_grad():
+                    pred = self.model(X, item_context_features_len=item_context_features_len)
+                    loss_iter = loss(pred, y)
+
+                loss_test_running += loss_iter.item()
+
+            writer.add_scalars('Loss', {'train': loss_train_running / (len(train_dataloader) * batch_size), 'test': loss_test_running / (len(test_dataloader) * batch_size)}, epoch+1)
+
+        writer.close()

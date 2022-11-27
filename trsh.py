@@ -1,8 +1,6 @@
 import pandas as pd
+import torch
 
-a = pd.DataFrame([[1, 4], [2, 5]])
-m = dict(a.values)
+b = torch.tensor([[1], [2], [2], [1]])
 
-b = pd.DataFrame([[1], [2], [2], [1]], columns=['a'])
-b['a'] = b['a'].map(m)
-print(b)
+print(b.reshape((-1,)))
