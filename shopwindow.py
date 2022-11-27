@@ -76,9 +76,14 @@ rec.fit(
     ui_data=df_ratings,
     item_context=item_context,
     user_context=user_context,
-    epochs=20,
+    epochs=1,
     cf_dim=20,
     nn_dim_nn=20,
     nn_dim_user=20,
     nn_dim_item=20,
 )
+
+rec.save('first')
+
+rec.load('first')
+print(rec.model.parameters)

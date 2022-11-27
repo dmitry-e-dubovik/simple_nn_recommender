@@ -1,5 +1,6 @@
 import os
 import shutil
+import json
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
@@ -116,6 +117,19 @@ class RecModule(nn.Module):
         user_context_dim: int,
         ) -> None:
         super().__init__()
+
+        self.kwargs = {
+            'num_user': num_user,
+            'num_item': num_item,
+            'cf_dim': cf_dim,
+            'nn_dim_user': nn_dim_user,
+            'nn_dim_item': nn_dim_item,
+            'nn_dim_nn': nn_dim_nn,
+            'item_context_features_in': item_context_features_in,
+            'item_context_dim': item_context_dim,
+            'user_context_features_in': user_context_features_in,
+            'user_context_dim': user_context_dim,
+        }
         
         self.cf_module = CFModule(
             num_user=num_user,
@@ -203,7 +217,7 @@ class SimpleNNRec():
         
         self.model = None
 
-        self.dim = None
+        # self.dim = None
         # self.optimizer = None
         # self.loss = None
 
@@ -308,6 +322,8 @@ class SimpleNNRec():
             user_context_dim=user_context_features_in,
             )
         
+        # print(self.model.)
+        
         self.__train(
             epochs=epochs,
             train_dataloader=dataloader_train,
@@ -364,3 +380,48 @@ class SimpleNNRec():
             writer.add_scalars('Loss', {'train': loss_train_running / (len(train_dataloader) * batch_size), 'test': loss_test_running / (len(test_dataloader) * batch_size)}, epoch+1)
 
         writer.close()
+
+
+    def save(self, model_name: str) -> None:
+        if os.path.exists(f'models/{model_name}'):
+            shutil.rmtree(f'models/{model_name}')
+        
+        os.makedirs(f'models/{model_name}')            
+
+        params = {}
+
+        params['logdir'] = 'runs'
+        
+        params['user_field'] = self.user_field
+        params['item_field'] = self.item_field
+        params['rating_field'] = self.rating_field
+
+        with open (f'models/{model_name}/params.json', 'w') as fp:
+            json.dump(params, fp)
+
+        self.user_map.to_pickle(f'models/{model_name}/user_map.pkl')
+        self.item_map.to_pickle(f'models/{model_name}/item_map.pkl')
+        # self.recommendations.to_parquet(f'models/{model_name}/recommendations.parquet.gzip')
+
+        torch.save([self.model.kwargs, self.model.state_dict()], f'models/{model_name}/model.pth')
+    
+
+    def load(self, model_name: str) -> None:
+        with open (f'models/{model_name}/params.json', 'r') as fp:
+            params = json.load(fp)
+        
+        self.logdir = params['logdir']
+
+        self.user_field = params['user_field']
+        self.item_field = params['item_field']
+        self.rating_field = params['rating_field']
+
+        self.user_map = pd.read_pickle(f'models/{model_name}/user_map.pkl')
+        self.item_map = pd.read_pickle(f'models/{model_name}/item_map.pkl')
+        # self.recommendations = pd.read_parquet(f'models/{model_name}/recommendations.parquet.gzip')
+
+        model_kwargs, model_state = torch.load(f'models/{model_name}/model.pth')
+        
+        self.model = RecModule(**model_kwargs)
+        self.model.load_state_dict(model_state)
+        self.model.eval()
