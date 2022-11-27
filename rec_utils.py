@@ -217,11 +217,7 @@ class SimpleNNRec():
         
         self.model = None
 
-        # self.dim = None
-        # self.optimizer = None
-        # self.loss = None
-
-        # self.recommendations = None
+        self.recommendations = None
     
 
     def __idx_map(
@@ -322,8 +318,6 @@ class SimpleNNRec():
             user_context_dim=user_context_features_in,
             )
         
-        # print(self.model.)
-        
         self.__train(
             epochs=epochs,
             train_dataloader=dataloader_train,
@@ -331,6 +325,12 @@ class SimpleNNRec():
             item_context_features_len=item_context_features_in,
             learning_rate=learning_rate,
             batch_size=batch_size,
+        )
+
+        self.recommendations = self.__fill_recommendations(
+            ui_data=ui,
+            item_context=i_context,
+            user_context=u_context,
         )
             
 
@@ -401,7 +401,7 @@ class SimpleNNRec():
 
         self.user_map.to_pickle(f'models/{model_name}/user_map.pkl')
         self.item_map.to_pickle(f'models/{model_name}/item_map.pkl')
-        # self.recommendations.to_parquet(f'models/{model_name}/recommendations.parquet.gzip')
+        self.recommendations.to_pickle(f'models/{model_name}/recommendations.pkl')
 
         torch.save([self.model.kwargs, self.model.state_dict()], f'models/{model_name}/model.pth')
     
@@ -418,10 +418,53 @@ class SimpleNNRec():
 
         self.user_map = pd.read_pickle(f'models/{model_name}/user_map.pkl')
         self.item_map = pd.read_pickle(f'models/{model_name}/item_map.pkl')
-        # self.recommendations = pd.read_parquet(f'models/{model_name}/recommendations.parquet.gzip')
+        self.recommendations = pd.read_pickle(f'models/{model_name}/recommendations.pkl')
 
         model_kwargs, model_state = torch.load(f'models/{model_name}/model.pth')
         
         self.model = RecModule(**model_kwargs)
         self.model.load_state_dict(model_state)
         self.model.eval()
+    
+
+    def __fill_recommendations(
+        self,
+        ui_data: pd.DataFrame,
+        item_context: pd.DataFrame,
+        user_context: pd.DataFrame,
+    ):
+
+        ui_mtrx = ui_data.pivot_table(
+            values='rating',
+            index='user_idx',
+            columns='item_idx',
+        )
+
+        ui_mtrx = ui_mtrx.unstack(-1).reorder_levels(['user_idx', 'item_idx'])
+        ui_mtrx = pd.DataFrame(ui_mtrx, columns=['rating'])
+        ui_mtrx = ui_mtrx[ui_mtrx['rating'].isnull()]
+        ui_mtrx = ui_mtrx.reset_index().drop(['rating'], axis=1)
+
+        ui_mtrx = ui_mtrx.merge(item_context, how='left', on=['item_idx'])
+        ui_mtrx = ui_mtrx.merge(user_context, how='left', on=['user_idx'])
+
+        with torch.no_grad():
+            pred = self.model(torch.tensor(ui_mtrx.values), item_context.shape[1] - 1).tolist()
+        
+        ui_mtrx['rating'] = pred
+
+        return ui_mtrx
+    
+
+    def recommend(self, id, n: int, mapping: dict = None):
+        user_idx = self.user_map[self.user_map['user_id'] == id][['user_idx']].iloc[0, 0]
+
+        top_list = self.recommendations[self.recommendations['user_idx'] == user_idx]
+        top_list = top_list.merge(self.item_map, how='left', on=['item_idx'])
+        top_list = top_list.sort_values(['rating'], ascending=False).head(n)
+        top_list = top_list['item_id'].tolist()
+
+        if mapping is not None:
+            top_list = list(map(mapping.get, top_list))
+
+        return top_list
